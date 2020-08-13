@@ -1,0 +1,396 @@
+
+/***************************************************  1. zadaća iz NBP, Maja Piskač  **********************************************************/
+
+
+-- 1. činjenica koju skladište opisuje:
+-- Jedan redak predstavlja zapis narudžbe pojedinog (poznatog) proizvoda unutar pojedine narudžbe, pri čemu je ta narudžba izvršena određeni dan (order_date), 
+-- te nam je poznato koliko je tog proizvoda naručeno (kvantiteta), njegova jedinična cijena, koliki je bio popust te koliki je ostvaren prihod od tog proizvoda unutar te narudžbe
+
+
+-- 2. definicija činjenične tablice i pripadnih dimenzijskih tablica u zvjezdastom modelu skladišta (CREATE TABLE naredbe za sve te tablice)
+
+/*** prvo kreiramo dimenzije ***/
+
+/*** u dProduct stavljamo osnovne podatke o proizvodu te uz identifikatore dobavljača i kategorije dodajemo i osnovne podatke o njima kako ne bismo imali velik broj 
+	manjih tablica, te to možemo napraviti jer su ti identifikatori strani ključevi u northwind tablici products, dakle jedan proizvod ima jednog dobavljača i jednu kategoriju  ***/
+		
+CREATE TABLE dProduct ( 
+	product_id SERIAL PRIMARY KEY,
+	product_id_DB SMALLINT,
+	product_name VARCHAR(40),
+	supplier_id SMALLINT,
+	supplier_name VARCHAR(40),
+	supplier_city VARCHAR(15),
+	supplier_region VARCHAR(15),
+	supplier_country VARCHAR(15),
+	category_id SMALLINT,
+	category_name VARCHAR(15)
+);
+
+
+/*** analogno kreiramo i dOrder, popunimo osnovnim podacima iz northwind tablice orders te uz identifikatore kupaca i dostavljača stavljamo i njihove osnovne podatke,
+	tablice vezane uz zaposlenike ne uzimamo u obzir jer nisu potrebni za ovu analizu  ***/
+
+CREATE TABLE dOrder ( 
+	order_id SERIAL PRIMARY KEY,
+	order_id_DB SMALLINT,
+	customer_id BPCHAR,
+	customer_name VARCHAR(40),
+	customer_city VARCHAR(15),
+	customer_region VARCHAR (15),
+	customer_country VARCHAR(15),
+	ship_city VARCHAR(15), 
+	ship_region VARCHAR(15),
+	ship_country VARCHAR(15),
+	shipper_id SMALLINT,
+	shipper_name VARCHAR(40)
+);
+
+
+/***  kreiramo i vremensku dimenziju dDate, te osim dana, mjeseca i godine, stvaramo i atribute dan u tjednu, dio tjedna i dio mjeseca jer će nam one trebati u daljnoj analizi ***/  
+
+CREATE TABLE dDate ( 
+	date_id SERIAL PRIMARY KEY,
+	date DATE NOT NULL,
+	day SMALLINT,
+	month SMALLINT,
+	year SMALLINT,
+	day_of_week VARCHAR(10),
+	part_of_week VARCHAR(10),
+	part_of_month VARCHAR(10)
+);
+
+
+/***  nakon dimenzija kreiramo činjeničnu tablicu, ona će imati ključ svake od dimenzija, dakle order_id, product_id i date_id,
+	te za mjere unit_price, quantity, discount iz northwind tablice order_details, te iz prethodnih mjera izvedenu mjeru revenue (prihod). ***/
+	
+CREATE TABLE cSale ( 
+	order_id SMALLINT NOT NULL,
+	product_id SMALLINT NOT NULL,
+	date_id SMALLINT NOT NULL,
+	unit_price REAL,
+	quantity SMALLINT,
+	discount REAL,
+	revenue REAL
+);
+
+
+
+-- 4. punjenje dimenzijskih tablica i činjenične tablice podacima iz northwind baze podataka 
+
+
+/*** punimo također prvo dimenzijske tablice ***/
+
+/*** u tablicu dProduct stavljamo podatke iz nothwind tablica products, suppliers i categories pri čemu moramo paziti da se podudaraju vrijednosti ključeva
+	supplier_id u products i suppliers, te category_id u products i categories, tj. da svakom proizvodu pridružimo pripadne vrijednosti tih atributa,
+	primarni ključ ove tablice je novogenerirani serial broj product_id, dok product_id_DB sadrži ključ product_id iz northwind products  ***/
+
+INSERT INTO dProduct ( product_id_DB, product_name, supplier_id, supplier_name, supplier_city, supplier_region, supplier_country, category_id, category_name)
+SELECT product_id, product_name, products.supplier_id, company_name, city, region, country, products.category_id, category_name
+FROM products, suppliers, categories
+WHERE products.supplier_id = suppliers.supplier_id AND products.category_id = categories.category_id; 
+
+
+/*** u tablicu dOrders stavljamo podatke iz northwind tablica orders, shippers i customers, ponovno pazimo da svakoj narudžbi pridružimo pripadne podatke o kupcu i dostavljaču
+	te je ovdje također ključ tablice dOrders novogenerirani serial order_id, dok u order_id_DB stavljamo ključ tablice northwind orders ***/
+
+INSERT INTO dOrder (order_id_DB, customer_id, customer_name, customer_city, customer_region, customer_country, ship_city, ship_region, ship_country, shipper_id, shipper_name)
+SELECT order_id, orders.customer_id, customers.company_name, city, region, country, ship_city, ship_region, ship_country, shippers.shipper_id, shippers.company_name
+FROM orders, shippers, customers
+WHERE orders.customer_id = customers.customer_id AND orders.ship_via = shippers.shipper_id;
+
+
+/*** dDate tablicu stvorimo tako da generiramo sve dane od najstarijeg dana narudžbe do najnovijeg dana narudžbe ***/
+
+INSERT INTO dDate (date)
+SELECT generate_series( min(order_date), max(order_date), interval '1 day') 
+FROM orders;
+
+
+/*** nakon toga ju ažuriramo tako da iz datuma izvučemo vrijednost dana, mjeseca i godine ***/
+
+UPDATE dDate 
+SET day = EXTRACT(DAY FROM date), month = EXTRACT(MONTH FROM date), year = EXTRACT(YEAR FROM date);
+
+
+/*** zatim iz datuma izvučemo koji je to bio dan u tjednu ***/
+
+UPDATE dDate
+SET day_of_week = CASE 
+	WHEN EXTRACT(DOW FROM date) = 1 THEN 'Monday'
+	WHEN EXTRACT(DOW FROM date) = 2 THEN 'Tuesday'
+	WHEN EXTRACT(DOW FROM date) = 3 THEN 'Wednesday'
+	WHEN EXTRACT(DOW FROM date) = 4 THEN 'Thursday'
+	WHEN EXTRACT(DOW FROM date) = 5 THEN 'Friday'
+	WHEN EXTRACT(DOW FROM date) = 6 THEN 'Saturday'
+	WHEN EXTRACT(DOW FROM date) = 0 THEN 'Sunday'
+END;
+
+
+/*** na temelju vrijednosti dana u tjednu odredimo kojem dio tjedna pripada taj datum, 
+	definirano je: početak tjedna - ponedjeljak, utorak; sredina - srijeda, četvrtak, petak; kraj - subota, nedjelja; ***/
+	
+UPDATE dDate
+SET part_of_week = CASE 
+	WHEN day_of_week = 'Monday' OR day_of_week = 'Tuesday' THEN 'start'
+	WHEN day_of_week = 'Saturday' OR day_of_week = 'Sunday' THEN 'end'
+	ELSE 'middle' 
+END;
+
+
+/*** konačno, punimo stupac dio mjeseca, definiramo: početak - do 5. u mjesecu; sredina - od 6. do 24.; kraj - od 25. nadalje ***/
+
+UPDATE dDate
+SET part_of_month = CASE
+	WHEN day < 6 THEN 'start'
+	WHEN day > 24 THEN 'end'
+	ELSE 'middle'
+END;
+
+
+/*** naposlijetku punimo činjeničnu tablicu, punimo ključevima dimenzija te vrijednostima iz order_details kao mjerama, prihod računamo kao unit_price*quantity*(1-discount) ***/
+ 
+INSERT INTO cSale
+SELECT dOrder.order_id, dProduct.product_id, dDate.date_id, unit_price, quantity, discount, (unit_price*quantity*(1-discount)) AS ravenue
+FROM order_details, orders, dOrder, dProduct, dDate
+WHERE order_details.order_id = dOrder.order_id_DB
+AND order_details.product_id = dProduct.product_id_DB
+AND orders.order_date = dDate.date
+AND orders.order_id = order_details.order_id;
+
+
+
+-- 5. izvršiti upite nad tablicama skladišta podataka kojima se mogu dobiti: 
+
+
+-- 5.1. usporedba ukupnih prihoda po kategorijama proizvoda u 1997. godini 
+
+SELECT SUM(revenue) AS total_revenue, category_name
+FROM cSale, dProduct, dDate
+WHERE cSale.product_id = dProduct.product_id
+AND cSale.date_id = dDate.date_id
+AND year = 1997
+GROUP BY 2;
+
+/*** izlaz: 
+
+ total_revenue | category_name
+---------------+----------------
+        103924 | Beverages
+       54940.8 | Produce
+       55368.6 | Condiments
+       56871.8 | Grains/Cereals
+       80975.1 | Meat/Poultry
+        115388 | Dairy Products
+       82657.8 | Confections
+       66959.2 | Seafood
+(8 rows)
+
+Dakle, najviše je prodano proizvoda u kategoriji Beverages, zatim Produce itd. ***/
+
+
+
+-- 5.2. top lista država iz kojih su dobavljani proizvodi u 1998. godini
+
+/*** tražimo imena država te koliko je proizvoda iz njih dobavljeno, tj. koliko je puta kraj nekoga proizvoda napisana kao supplier_country neka država
+	grupiramo proizvode po državama, a ispisujemo u padajućem poredku po broju proizvoda, za 1998. godinu ***/
+
+SELECT DISTINCT(supplier_country), COUNT(supplier_country) 
+FROM dProduct, cSale, dDate
+WHERE dProduct.product_id = cSale.product_id AND cSale.date_id = dDate.date_id
+AND year = 1998
+GROUP BY 1
+ORDER BY 2 DESC;
+
+/*** izlaz: 
+
+ supplier_country | count
+------------------+-------
+ USA              |    99
+ Australia        |    89
+ Germany          |    88
+ UK               |    76
+ France           |    57
+ Italy            |    47
+ Canada           |    42
+ Japan            |    38
+ Norway           |    25
+ Singapore        |    25
+ Finland          |    24
+ Sweden           |    23
+ Brazil           |    21
+ Spain            |    18
+ Denmark          |    13
+ Netherlands      |     6
+(16 rows)
+
+Dakle, najviše je proizvoda dobavljeno iz USA, zatim Australije itd.  ***/
+
+
+ 
+-- 5.3. iz kojih država naručitelji generiraju najveći prihod početkom tjedna
+
+/*** tražimo imena država te koliko puta kraj neke narudžbe piše da je customer_country pojedina država
+	grupiramo po imenu države, sortiramo po prihodima silazno te prikazujemo prvih 5 koji generiraju najveći prihod  početkom tjedna***/
+
+SELECT DISTINCT(customer_country), SUM(revenue) AS total_revenue
+FROM cSale, dOrder, dDate
+WHERE cSale.order_id = dOrder.order_id AND cSale.date_id = dDate.date_id
+AND part_of_week = 'start'
+GROUP BY 1
+ORDER BY 2 DESC
+LIMIT 5;
+
+/*** izlaz:
+
+ customer_country | total_revenue
+------------------+---------------
+ Germany          |        108148
+ USA              |        105810
+ Austria          |       49857.7
+ Brazil           |       42831.8
+ UK               |       27533.6
+(5 rows)
+
+Dakle, najveći su prihod generirali naručitelji iz Njemačke, zatim USA itd.  ***/
+
+
+ 
+-- 5.4. kojim danima su popusti najveći 
+
+
+/*** pogledajmo prvo po danima u tjednu prosječan popust ***/
+
+SELECT day_of_week, AVG(discount)
+FROM cSale, dDate
+WHERE cSale.date_id = dDate.date_id
+GROUP BY 1
+ORDER BY 2 DESC;
+
+/*** izlaz: 
+
+ day_of_week |        avg
+-------------+--------------------
+ Wednesday   | 0.0635634751405509
+ Monday      | 0.0607913679284729
+ Thursday    | 0.0532110098817753
+ Friday      | 0.0524532718357639
+ Tuesday     | 0.0505882362057181
+(5 rows)
+
+Najveći popust je srijedom, a najmanji utorkom te je razlika otprilike 1.3% ***/
+
+
+/*** zatim po danima u mjesecu, gledamo top 10 s najvećim popustom ***/
+
+SELECT day, AVG(discount)
+FROM cSale, dDate
+WHERE cSale.date_id = dDate.date_id
+GROUP BY 1
+ORDER BY 2 DESC
+LIMIT 10;
+
+/*** izlaz:
+
+ day |        avg
+-----+--------------------
+  10 | 0.0898550740726616
+  22 | 0.0848684223662866
+  21 | 0.0818965535225539
+  17 |   0.08014705996303
+   1 | 0.0784615392868335
+  27 |  0.076315790708912
+  11 | 0.0708333344405724
+  19 | 0.0693181824701076
+  25 | 0.0677966108008967
+   2 | 0.0677419363130485
+(10 rows)
+
+Šest od ovih dana, odnosno 60%, je u drugoj polovici mjeseca, tj. nakon 15. u mjesecu, stoga bismo mogli zaključiti da je veći popust u drugom dijelu/ krajem mjeseca ***/ 
+
+
+/*** grupirajmo još i po danu u mjesecu i danu u tjednu ***/
+
+SELECT day, day_of_week, AVG(discount)
+FROM cSale, dDate
+WHERE cSale.date_id = dDate.date_id
+GROUP BY 1,2
+ORDER BY 3 DESC
+LIMIT 10;
+
+/*** izlaz:
+
+ day | day_of_week |        avg
+-----+-------------+-------------------
+   1 | Monday      | 0.178571428571429
+  17 | Thursday    | 0.170000001788139
+  30 | Wednesday   | 0.155555557873514
+  29 | Monday      | 0.150000000993411
+  27 | Wednesday   | 0.142857142857143
+  24 | Wednesday   | 0.140909091992812
+  21 | Friday      | 0.138888892200258
+  28 | Friday      | 0.136363636363636
+  19 | Monday      | 0.131578948152693
+  21 | Thursday    | 0.130000000447035
+(10 rows)
+
+Najveći popust bio je ponedjeljkom, 1. u mjesecu, no svi ostali datumi su u drugom dijelu mjeseca, tj. od 17. nadalje, te od sredine tjedna nadalje, 
+odnosno u srijedu, četvtrak i petak, te nijedan od tih dana nije bio u utorak, što je u skladu s tablicom popusta po danima u tjednu.  ***/
+
+
+
+-- 5.5. je li prihod krajem mjeseca veći nego početkom mjeseca
+
+/*** globalno, po svim državama zajedno ***/
+
+SELECT SUM(revenue), part_of_month
+FROM cSale, dDate
+WHERE cSale.date_id = dDate.date_id
+GROUP BY 2;
+
+/*** izlaz:
+
+  sum   | part_of_month
+--------+---------------
+ 788255 | middle
+ 263059 | end
+ 214480 | start
+(3 rows)
+
+Prihod je krajem mjeseca bio veći za otprilike 50 000 (početak mjeseca je do 5. u mjesecu, a kraj od 25. nadalje) ***/
+
+
+/*** po državama zasebno ***/
+
+/*** grupiramo po državama i dijelu mjeseca, te gledamo samo najveće prihode, tj. veće od 10000 ***/
+
+SELECT SUM(revenue) AS sum_revenue, customer_country, part_of_month
+FROM cSale, dDate, dOrder
+WHERE cSale.date_id = dDate.date_id AND cSale.order_id = dOrder.order_id AND part_of_month != 'middle'
+GROUP BY 2, 3
+HAVING SUM(revenue) > 10000
+ORDER BY 2, 1 DESC;
+
+/*** izlaz:
+
+ sum_revenue | customer_country | part_of_month
+-------------+------------------+---------------
+     19918.6 | Austria          | end
+     15361.4 | Austria          | start
+     37931.4 | Brazil           | end
+     20875.6 | Brazil           | start
+       12413 | France           | start
+     11477.6 | France           | end
+     58128.6 | Germany          | start
+     34700.3 | Germany          | end
+     17415.2 | Ireland          | end
+     16752.4 | Sweden           | start
+     12697.1 | UK               | end
+     12537.7 | UK               | start
+     55380.2 | USA              | end
+     27055.2 | USA              | start
+     16996.6 | Venezuela        | end
+(15 rows)
+
+U većini prikazanih zemalja veći je prihod bio krajem mjeseca, iznimke su Francuska (približno jednake vrijednosti), Njemačka i Švedska.
+Dakle, zaključujemo da je prihod krajem mjeseca veći nego na početku.  ***/
